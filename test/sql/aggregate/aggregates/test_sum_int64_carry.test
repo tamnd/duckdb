@@ -1,0 +1,57 @@
+# name: test/sql/aggregate/aggregates/test_sum_int64_carry.test
+# description: SUM(BIGINT) must not lose carries when a vector of large values is accumulated
+# group: [aggregates]
+
+require parquet
+
+# The clustered sum kernels add a run of "safe" BIGINT values into an int64_t subtotal before folding
+# that subtotal into the 128-bit state. A run covers up to STANDARD_VECTOR_SIZE values, so the bound on
+# a safe value has to leave room for that many of them. Values just under 2^53 used to pass the check,
+# and a full vector of 2048 of them wraps the subtotal, silently losing 2^64 from the result.
+#
+# Only non-nullable dictionary encoded columns reach that kernel, which is why this goes through parquet.
+
+statement ok
+CREATE TABLE big_values(g BIGINT NOT NULL, x BIGINT NOT NULL)
+
+statement ok
+INSERT INTO big_values SELECT ((i // 2) % 2)::BIGINT, (9007199254740991 - 2 * (i % 2))::BIGINT FROM range(65536) t(i)
+
+statement ok
+COPY big_values TO '{TEST_DIR}/sum_int64_carry.parquet' (FORMAT PARQUET)
+
+query I
+SELECT SUM(x) FROM '{TEST_DIR}/sum_int64_carry.parquet'
+----
+590295810358705520640
+
+query I
+SELECT SUM(x) - SUM(x::HUGEINT) FROM '{TEST_DIR}/sum_int64_carry.parquet'
+----
+0
+
+query I
+SELECT AVG(x) FROM '{TEST_DIR}/sum_int64_carry.parquet'
+----
+9007199254740990
+
+statement ok
+CREATE TABLE negated_values(g BIGINT NOT NULL, x BIGINT NOT NULL)
+
+statement ok
+INSERT INTO negated_values SELECT g, -x FROM big_values
+
+statement ok
+COPY negated_values TO '{TEST_DIR}/sum_int64_carry_neg.parquet' (FORMAT PARQUET)
+
+query I
+SELECT SUM(x) FROM '{TEST_DIR}/sum_int64_carry_neg.parquet'
+----
+-590295810358705520640
+
+# the same kernels back the grouped aggregates
+query II
+SELECT g, SUM(x) FROM '{TEST_DIR}/sum_int64_carry.parquet' GROUP BY g ORDER BY g
+----
+0	295147905179352760320
+1	295147905179352760320

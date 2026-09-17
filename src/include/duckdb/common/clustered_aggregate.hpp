@@ -21,7 +21,21 @@ struct ClusteredAggrState;
 
 using DictProps = unsafe_unique_array<int64_t>;
 
-static constexpr uint64_t SUM_OVERFLOW_MASK = ~((uint64_t(1) << 53) - 1);
+//! Number of bits required to index a vector, i.e. log2(STANDARD_VECTOR_SIZE).
+constexpr idx_t VectorSizeBits(idx_t vector_size) {
+	return vector_size <= 1 ? 0 : 1 + VectorSizeBits(vector_size / 2);
+}
+
+//! The clustered sum kernels accumulate a run of values into a single int64_t before folding that
+//! subtotal into the hugeint state. A run covers at most STANDARD_VECTOR_SIZE values, so a value may
+//! only be accumulated that way if STANDARD_VECTOR_SIZE of them still fit in an int64_t. That leaves
+//! 63 - log2(STANDARD_VECTOR_SIZE) bits of magnitude per value: with the default vector size of 2048
+//! a safe value is one that fits in a signed 53-bit range (52 magnitude bits plus the sign).
+static constexpr idx_t SUM_SAFE_VALUE_BITS = 63 - VectorSizeBits(STANDARD_VECTOR_SIZE);
+static_assert((uint64_t(1) << VectorSizeBits(STANDARD_VECTOR_SIZE)) == STANDARD_VECTOR_SIZE,
+              "the vector size must be a power of two for the safe-value bound to hold");
+
+static constexpr uint64_t SUM_OVERFLOW_MASK = ~((uint64_t(1) << SUM_SAFE_VALUE_BITS) - 1);
 static inline bool I64VectorSumSafe(int64_t v) {
 	return ((static_cast<uint64_t>(v) ^ static_cast<uint64_t>(v >> 63)) & SUM_OVERFLOW_MASK) == 0;
 }
